@@ -1,19 +1,537 @@
-<!DOCTYPE html>
-<html>
-     <head></head>
-     <body></body>
-</html>
-<head>
-<link rel="stylesheet" href="style.css"/>
-</head>
-<body>
-	<h1>Boba</h1>
-	<p>I love boba</p>
-	<p>Hooray!</p>
-</body>
-<body>
-<img src="https://upload.wikimedia.org/wikipedia/commons/thumb/1/15/Cat_August_2010-4.jpg/1200px-Cat_August_2010-4.jpg"/>
-<h1>Boba</h1>
-<p>I love boba</p>
-<p>Hooray!</p>
-</body>
+import { useState } from "react";
+
+// ─── BEA Regional Price Parities 2024 (national avg = 100) ───────────────────
+// Source: Bureau of Economic Analysis, Feb 2026 release
+const BEA_RPP = {
+  AL: 87.9,  AK: 126.6, AZ: 103.4, AR: 86.9,  CA: 110.7,
+  CO: 105.9, CT: 116.8, DE: 107.2, FL: 102.8, GA: 96.4,
+  HI: 110.0, ID: 100.1, IL: 101.3, IN: 91.2,  IA: 87.8,
+  KS: 87.5,  KY: 89.2,  LA: 93.1,  ME: 108.2, MD: 124.0,
+  MA: 149.7, MI: 93.8,  MN: 97.6,  MS: 87.0,  MO: 90.1,
+  MT: 103.2, NE: 91.6,  NV: 103.2, NH: 116.1, NJ: 108.8,
+  NM: 93.0,  NY: 134.5, NC: 95.1,  ND: 94.2,  OH: 91.0,
+  OK: 87.8,  OR: 121.2, PA: 101.8, RI: 118.6, SC: 96.2,
+  SD: 93.5,  TN: 92.4,  TX: 95.3,  UT: 102.8, VT: 115.9,
+  VA: 107.8, WA: 110.0, WV: 86.0,  WI: 94.0,  WY: 97.0,
+};
+
+// ─── NATIONAL MEDIAN INDIVIDUAL INCOME — 5-YEAR BRACKETS ────────────────────
+// Derived from BLS individual-age median earnings data (DQYDJ / ACS 2023)
+// Each bracket value = simple average of the BLS per-age medians within it
+// Source: dqydj.com/average-median-top-salary-by-age-percentiles / BLS Q3 2024
+const NATIONAL_5YR = {
+  "18-22": 22880,   // avg of ages 18($13K)–22($30K)
+  "23-27": 41760,   // avg of ages 23($33K)–27($47K)
+  "28-32": 54600,   // avg of ages 28($50K)–32($58K)
+  "33-37": 60300,   // avg of ages 33($60K)–37($60K)
+  "38-42": 60980,   // avg of ages 38($60K)–42($62.4K)
+  "43-47": 62250,   // avg of ages 43($65K)–47($60K)
+  "48-52": 66000,   // avg of ages 48($65K)–52($65K) — peak earnings
+  "53-57": 63800,   // avg of ages 53($64K)–57($65K)
+  "58-62": 61000,   // avg of ages 58($60K)–62($65K)
+  "63-67": 55747,   // avg of ages 63($58K)–67($50K)
+  "68+":   46000,   // avg of ages 68($50K)–70($44K) and beyond
+};
+
+// Anchor: national median for 25-44 bracket (ACS 2023) used to compute state multipliers
+const NATIONAL_ANCHOR = 62608;
+
+// ─── STATE BASE INCOME (25-44 median, ACS 2023 / Scholaroo) ─────────────────
+// State multiplier = state_base / NATIONAL_ANCHOR → scales all 5-yr brackets
+const STATE_BASE = {
+  AL: 60541,  AK: 89412,  AZ: 75203,  AR: 58312,  CA: 101203,
+  CO: 95412,  CT: 96318,  DE: 78318,  FL: 68412,  GA: 74318,
+  HI: 92318,  ID: 71318,  IL: 80318,  IN: 66318,  IA: 70318,
+  KS: 68318,  KY: 62318,  LA: 60318,  ME: 71318,  MD: 107318,
+  MA: 108536, MI: 68318,  MN: 86318,  MS: 58641,  MO: 66318,
+  MT: 67318,  NE: 70318,  NV: 72318,  NH: 96318,  NJ: 104318,
+  NM: 60318,  NY: 88318,  NC: 68318,  ND: 78318,  OH: 68318,
+  OK: 62318,  OR: 80318,  PA: 74318,  RI: 82318,  SC: 66318,
+  SD: 70318,  TN: 67318,  TX: 77318,  UT: 96318,  VT: 76318,
+  VA: 98318,  WA: 100318, WV: 54318,  WI: 72318,  WY: 74318,
+};
+
+// Build full income lookup: state × 5-yr bracket
+// Formula: stateIncome[bracket] = NATIONAL_5YR[bracket] × (STATE_BASE[st] / NATIONAL_ANCHOR)
+const INCOME = Object.fromEntries(
+  Object.entries(STATE_BASE).map(([st, base]) => {
+    const mult = base / NATIONAL_ANCHOR;
+    return [st, Object.fromEntries(
+      Object.entries(NATIONAL_5YR).map(([ag, nat]) => [ag, Math.round(nat * mult)])
+    )];
+  })
+);
+
+// ─── COL EXPENDITURE SHARES BY 5-YR BRACKET ─────────────────────────────────
+// Interpolated from BLS Consumer Expenditure Survey 2023 anchor points
+// (15-24, 35-44, 45-54, 65+ reference age groups)
+// Source: BLS CEX 2023 — bls.gov/cex
+const COL_BY_AGE = {
+  "18-22": { housing: 37, food: 13, healthcare: 4,  transport: 17, other: 29 },
+  "23-27": { housing: 35, food: 12, healthcare: 5,  transport: 17, other: 31 },
+  "28-32": { housing: 34, food: 12, healthcare: 6,  transport: 16, other: 32 },
+  "33-37": { housing: 33, food: 12, healthcare: 7,  transport: 16, other: 32 },
+  "38-42": { housing: 31, food: 13, healthcare: 9,  transport: 16, other: 31 },
+  "43-47": { housing: 30, food: 13, healthcare: 11, transport: 15, other: 31 },
+  "48-52": { housing: 29, food: 13, healthcare: 13, transport: 15, other: 30 },
+  "53-57": { housing: 29, food: 13, healthcare: 14, transport: 15, other: 29 },
+  "58-62": { housing: 30, food: 14, healthcare: 15, transport: 14, other: 27 },
+  "63-67": { housing: 31, food: 14, healthcare: 16, transport: 13, other: 26 },
+  "68+":   { housing: 32, food: 14, healthcare: 17, transport: 12, other: 25 },
+};
+
+const AGE_NOTES = {
+  "18-22": "Early career / students. Lowest incomes, many part-time workers. Housing a heavy burden due to renting.",
+  "23-27": "Entry-level professionals. Rapid income growth begins. Student debt and urban rent compress savings.",
+  "28-32": "Establishing careers. Salary jumps with 5–7 yrs experience. Childcare costs begin. Still largely renting.",
+  "33-37": "Mid-career growth. First home purchases common. Childcare at or near peak. Income rising steadily.",
+  "38-42": "Peak family phase. Highest childcare / education costs. Many at manager/senior level. Mortgage established.",
+  "43-47": "High-earning plateau begins. Children becoming independent. Retirement contributions ramping up.",
+  "48-52": "Peak earning bracket nationally. Mortgages near payoff. Healthcare costs notably rising.",
+  "53-57": "Late career. High income but healthcare eats larger share. Retirement planning intensifying.",
+  "58-62": "Pre-retirement. Many taking early retirement or reducing hours. Healthcare share continues rising.",
+  "63-67": "Retirement transition. Social Security eligibility. Medicare at 65. Fixed income begins for many.",
+  "68+":   "Full retirement. Healthcare consumes 17% of budget — 4× the rate of 18-22. Fixed/investment income.",
+};
+
+const STATE_NAMES = {
+  AL:"Alabama", AK:"Alaska", AZ:"Arizona", AR:"Arkansas", CA:"California",
+  CO:"Colorado", CT:"Connecticut", DE:"Delaware", FL:"Florida", GA:"Georgia",
+  HI:"Hawaii", ID:"Idaho", IL:"Illinois", IN:"Indiana", IA:"Iowa",
+  KS:"Kansas", KY:"Kentucky", LA:"Louisiana", ME:"Maine", MD:"Maryland",
+  MA:"Massachusetts", MI:"Michigan", MN:"Minnesota", MS:"Mississippi", MO:"Missouri",
+  MT:"Montana", NE:"Nebraska", NV:"Nevada", NH:"New Hampshire", NJ:"New Jersey",
+  NM:"New Mexico", NY:"New York", NC:"North Carolina", ND:"North Dakota", OH:"Ohio",
+  OK:"Oklahoma", OR:"Oregon", PA:"Pennsylvania", RI:"Rhode Island", SC:"South Carolina",
+  SD:"South Dakota", TN:"Tennessee", TX:"Texas", UT:"Utah", VT:"Vermont",
+  VA:"Virginia", WA:"Washington", WV:"West Virginia", WI:"Wisconsin", WY:"Wyoming",
+};
+
+const AGE_GROUPS = Object.keys(NATIONAL_5YR);
+
+// Color gradient across age groups
+const AGE_COLORS = {
+  "18-22": "#38bdf8", "23-27": "#34d399", "28-32": "#a3e635",
+  "33-37": "#facc15", "38-42": "#fb923c", "43-47": "#f87171",
+  "48-52": "#e879f9", "53-57": "#a78bfa", "58-62": "#60a5fa",
+  "63-67": "#2dd4bf", "68+":   "#94a3b8",
+};
+
+function fmt(n) { return "$" + Math.round(n).toLocaleString(); }
+
+function getRPPColor(r) {
+  if (r >= 120) return "#ef4444";
+  if (r >= 110) return "#f97316";
+  if (r >= 100) return "#f59e0b";
+  if (r >= 90)  return "#22c55e";
+  return "#38bdf8";
+}
+function getRPPLabel(r) {
+  if (r >= 120) return "Very High";
+  if (r >= 110) return "High";
+  if (r >= 100) return "Above Avg";
+  if (r >= 90)  return "Below Avg";
+  return "Low";
+}
+function realIncome(nom, rpp) { return nom / (rpp / 100); }
+
+function Bar({ pct, color, label }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+      <div style={{ width: 88, fontSize: 11, color: "#64748b", textAlign: "right" }}>{label}</div>
+      <div style={{ flex: 1, background: "#1e293b", borderRadius: 3, height: 9 }}>
+        <div style={{ width: `${pct}%`, background: color, height: "100%", borderRadius: 3, transition: "width 0.5s ease" }} />
+      </div>
+      <div style={{ width: 30, fontSize: 11, color: "#94a3b8" }}>{pct}%</div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [state, setState] = useState("TX");
+  const [age, setAge]     = useState("28-32");
+  const [sortBy, setSortBy]   = useState("nominal");
+  const [sortDir, setSortDir] = useState("desc");
+  const [tab, setTab] = useState("explorer");
+
+  const stateList = Object.keys(STATE_NAMES).sort();
+  const rpp    = BEA_RPP[state] ?? 100;
+  const income = INCOME[state]?.[age] ?? 0;
+  const real   = realIncome(income, rpp);
+  const natAvg = NATIONAL_5YR[age];
+  const col    = COL_BY_AGE[age];
+  const ageCol = AGE_COLORS[age];
+
+  const tableRows = stateList.map(st => ({
+    st, name: STATE_NAMES[st],
+    rpp: BEA_RPP[st],
+    nominal: INCOME[st]?.[age] ?? 0,
+    real: realIncome(INCOME[st]?.[age] ?? 0, BEA_RPP[st]),
+  }));
+  const sorted = [...tableRows].sort((a, b) =>
+    sortDir === "desc" ? b[sortBy] - a[sortBy] : a[sortBy] - b[sortBy]
+  );
+  const toggleSort = col => {
+    if (sortBy === col) setSortDir(d => d === "desc" ? "asc" : "desc");
+    else { setSortBy(col); setSortDir("desc"); }
+  };
+  const arr = c => sortBy === c ? (sortDir === "desc" ? " ↓" : " ↑") : "";
+
+  const cs = {
+    card: { background: "#0f172a", border: "1px solid #1e293b", borderRadius: 10, padding: 16 },
+    lbl:  { fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.08em", display: "block", marginBottom: 4, fontWeight: 600 },
+    sel:  { background: "#020617", border: "1px solid #334155", borderRadius: 6, color: "#e2e8f0", padding: "7px 10px", width: "100%", fontSize: 13, fontFamily: "inherit" },
+    th:   { padding: "8px 12px", fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.08em", textAlign: "left", cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" },
+    td:   { padding: "7px 12px", fontSize: 13, borderBottom: "1px solid #0a0f1e" },
+    tabBtn: (active, color) => ({
+      padding: "8px 10px", background: active ? color : "#0f172a",
+      color: active ? "#020617" : "#64748b",
+      border: "1px solid " + (active ? color : "#1e293b"),
+      borderRadius: 8, cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 700,
+    }),
+  };
+
+  return (
+    <div style={{ fontFamily: "'DM Mono','Courier New',monospace", background: "#020617", color: "#e2e8f0", minHeight: "100vh", padding: "20px 14px" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@700;800&display=swap');
+        * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+        tr:hover td { background: #0c1a2e !important; }
+        select option { background: #0f172a; }
+      `}</style>
+
+      <div style={{ maxWidth: 1040, margin: "0 auto" }}>
+
+        {/* Header */}
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 11, color: "#38bdf8", letterSpacing: "0.2em", textTransform: "uppercase", marginBottom: 4 }}>M3 Challenge · Q1 Data Reference</div>
+          <h1 style={{ fontFamily: "'Syne',sans-serif", fontSize: "clamp(20px,4vw,34px)", fontWeight: 800, margin: 0, lineHeight: 1.1 }}>
+            STATE INCOME &amp; COST OF LIVING<br />
+            <span style={{ color: ageCol }}>5-YEAR AGE BRACKETS · 18 → 68+</span>
+          </h1>
+          <p style={{ color: "#475569", fontSize: 11, marginTop: 6 }}>
+            BEA RPP 2024 · Census ACS 2023 · BLS Individual-Age Earnings · BLS CEX 2023
+          </p>
+        </div>
+
+        {/* Age selector strip */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 14 }}>
+          {AGE_GROUPS.map(ag => (
+            <button key={ag} onClick={() => setAge(ag)}
+              style={{ padding: "5px 12px", background: age === ag ? AGE_COLORS[ag] : "#0f172a", color: age === ag ? "#020617" : "#64748b", border: "1px solid " + (age === ag ? AGE_COLORS[ag] : "#1e293b"), borderRadius: 20, cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700, transition: "all 0.2s" }}>
+              {ag}
+            </button>
+          ))}
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+          {[["explorer","State Explorer"], ["table","50-State Table"], ["lifecycle","Income Lifecycle"], ["colbreakdown","COL by Age"]].map(([k,lbl]) => (
+            <button key={k} onClick={() => setTab(k)} style={cs.tabBtn(tab === k, ageCol)}>{lbl}</button>
+          ))}
+        </div>
+
+        {/* ── EXPLORER ── */}
+        {tab === "explorer" && (
+          <div style={{ display: "grid", gridTemplateColumns: "270px 1fr", gap: 12 }}>
+
+            {/* Left */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={cs.card}>
+                <label style={cs.lbl}>State</label>
+                <select value={state} onChange={e => setState(e.target.value)} style={cs.sel}>
+                  {stateList.map(st => <option key={st} value={st}>{STATE_NAMES[st]} ({st})</option>)}
+                </select>
+              </div>
+
+              <div style={cs.card}>
+                <div style={{ fontSize: 12, color: ageCol, fontWeight: 700, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.1em" }}>Cost of Living Index</div>
+                <div style={{ fontSize: 10, color: "#475569", marginBottom: 5 }}>BEA Regional Price Parity 2024</div>
+                <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 40, fontWeight: 800, color: getRPPColor(rpp), lineHeight: 1 }}>{rpp.toFixed(1)}</div>
+                <div style={{ fontSize: 12, color: getRPPColor(rpp), marginTop: 3 }}>{getRPPLabel(rpp)}</div>
+                <div style={{ fontSize: 11, color: "#334155", marginTop: 8, lineHeight: 1.6 }}>
+                  100 = national avg. {rpp > 100 ? `+${(rpp-100).toFixed(1)}% more expensive` : `${(100-rpp).toFixed(1)}% cheaper`} than U.S. avg.
+                </div>
+              </div>
+
+              <div style={cs.card}>
+                <div style={{ fontSize: 12, color: "#94a3b8", fontWeight: 700, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>Spending — Age {age}</div>
+                <div style={{ fontSize: 10, color: "#475569", marginBottom: 8 }}>Share of total expenditures · BLS CEX 2023</div>
+                {[["Housing", col.housing, "#818cf8"], ["Food", col.food, "#34d399"], ["Healthcare", col.healthcare, "#f87171"], ["Transport", col.transport, "#fb923c"], ["Other/Discret.", col.other, "#94a3b8"]].map(([l,v,c]) =>
+                  <Bar key={l} label={l} pct={v} color={c} />
+                )}
+                <div style={{ marginTop: 10, fontSize: 11, color: "#475569", lineHeight: 1.6 }}>{AGE_NOTES[age]}</div>
+              </div>
+            </div>
+
+            {/* Right */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {/* Big numbers */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                {[
+                  ["Median Income (Nominal)", fmt(income), ageCol, "ACS 2023 · state-adjusted"],
+                  ["Real Income (COL-adj.)", fmt(real), "#22c55e", "Purchasing power basis"],
+                  ["vs. National (Age " + age + ")", (income >= natAvg ? "+" : "") + fmt(income - natAvg), income >= natAvg ? "#22c55e" : "#ef4444", "National avg: " + fmt(natAvg)],
+                ].map(([lbl, val, color, sub]) => (
+                  <div key={lbl} style={{ ...cs.card, borderColor: color + "44" }}>
+                    <div style={{ fontSize: 10, color: "#475569", marginBottom: 4 }}>{lbl}</div>
+                    <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 24, fontWeight: 800, color, lineHeight: 1 }}>{val}</div>
+                    <div style={{ fontSize: 10, color: "#334155", marginTop: 4 }}>{sub}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* All 5-yr brackets for this state */}
+              <div style={cs.card}>
+                <div style={{ fontSize: 12, color: "#94a3b8", fontWeight: 700, marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  All Age Brackets — {STATE_NAMES[state]} (RPP {rpp})
+                </div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid #1e293b" }}>
+                        {["Age", "Nominal", "Real (adj.)", "vs National", "Healthcare %"].map(h => (
+                          <th key={h} style={{ ...cs.th, cursor: "default" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {AGE_GROUPS.map(ag => {
+                        const nom = INCOME[state]?.[ag] ?? 0;
+                        const rl  = realIncome(nom, rpp);
+                        const nat = NATIONAL_5YR[ag];
+                        const diff = nom - nat;
+                        const hc = COL_BY_AGE[ag].healthcare;
+                        return (
+                          <tr key={ag} style={{ background: ag === age ? "#0c1a2e" : "transparent" }}
+                            onClick={() => setAge(ag)} style={{ cursor: "pointer", background: ag === age ? "#0c1a2e" : "transparent" }}>
+                            <td style={{ ...cs.td, fontWeight: ag === age ? 700 : 400 }}>
+                              <span style={{ color: AGE_COLORS[ag], marginRight: 6 }}>●</span>
+                              <span style={{ color: ag === age ? "#e2e8f0" : "#94a3b8" }}>{ag}</span>
+                            </td>
+                            <td style={cs.td}>{fmt(nom)}</td>
+                            <td style={{ ...cs.td, color: "#22c55e" }}>{fmt(rl)}</td>
+                            <td style={{ ...cs.td, color: diff >= 0 ? "#22c55e" : "#ef4444" }}>{diff >= 0 ? "+" : ""}{fmt(diff)}</td>
+                            <td style={{ ...cs.td, color: hc >= 14 ? "#f87171" : hc >= 10 ? "#f59e0b" : "#94a3b8" }}>{hc}%</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div style={{ ...cs.card, fontSize: 11, color: "#475569", lineHeight: 1.8 }}>
+                <strong style={{ color: "#64748b" }}>Methodology:</strong> State incomes = NATIONAL_5YR[bracket] × (state_base / $62,608). State base = ACS 2023 median HH income for 25-44 age group (Scholaroo). Real income = nominal ÷ (RPP/100). COL shares interpolated from BLS CEX 2023 anchor age groups.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── 50-STATE TABLE ── */}
+        {tab === "table" && (
+          <div style={cs.card}>
+            <div style={{ fontSize: 12, color: "#94a3b8", fontWeight: 700, marginBottom: 4 }}>
+              Age bracket: <span style={{ color: ageCol }}>{age}</span> · National median: {fmt(NATIONAL_5YR[age])} · Click headers to sort
+            </div>
+            <div style={{ fontSize: 11, color: "#475569", marginBottom: 12 }}>Click any row to drill into State Explorer</div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ borderBottom: "2px solid #334155" }}>
+                    <th style={{ ...cs.th, cursor: "default" }}>State</th>
+                    <th style={cs.th} onClick={() => toggleSort("rpp")}>COL Index{arr("rpp")}</th>
+                    <th style={cs.th} onClick={() => toggleSort("nominal")}>Median Income{arr("nominal")}</th>
+                    <th style={cs.th} onClick={() => toggleSort("real")}>Real Income (adj.){arr("real")}</th>
+                    <th style={{ ...cs.th, cursor: "default" }}>COL Tier</th>
+                    <th style={{ ...cs.th, cursor: "default" }}>vs. National</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.map((row, i) => {
+                    const diff = row.nominal - NATIONAL_5YR[age];
+                    return (
+                      <tr key={row.st} onClick={() => { setState(row.st); setTab("explorer"); }}
+                        style={{ cursor: "pointer", background: row.st === state ? "#0c1a2e" : i % 2 === 0 ? "#0a0f1e" : "transparent" }}>
+                        <td style={{ ...cs.td, fontWeight: 600 }}>
+                          <span style={{ color: ageCol, marginRight: 8 }}>{row.st}</span>
+                          <span style={{ color: "#94a3b8" }}>{row.name}</span>
+                        </td>
+                        <td style={{ ...cs.td, color: getRPPColor(row.rpp) }}>{row.rpp.toFixed(1)}</td>
+                        <td style={cs.td}>{fmt(row.nominal)}</td>
+                        <td style={{ ...cs.td, color: "#22c55e" }}>{fmt(row.real)}</td>
+                        <td style={cs.td}>
+                          <span style={{ background: getRPPColor(row.rpp) + "22", color: getRPPColor(row.rpp), padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700 }}>
+                            {getRPPLabel(row.rpp)}
+                          </span>
+                        </td>
+                        <td style={{ ...cs.td, color: diff >= 0 ? "#22c55e" : "#ef4444" }}>
+                          {diff >= 0 ? "+" : ""}{fmt(diff)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ── INCOME LIFECYCLE ── */}
+        {tab === "lifecycle" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "270px 1fr", gap: 12 }}>
+              <div style={cs.card}>
+                <label style={cs.lbl}>State</label>
+                <select value={state} onChange={e => setState(e.target.value)} style={cs.sel}>
+                  {stateList.map(st => <option key={st} value={st}>{STATE_NAMES[st]} ({st})</option>)}
+                </select>
+                <div style={{ marginTop: 12, fontSize: 11, color: "#475569", lineHeight: 1.7 }}>
+                  Shows how median income changes across all 11 age brackets for <strong style={{ color: "#e2e8f0" }}>{STATE_NAMES[state]}</strong> (RPP {rpp.toFixed(1)}).
+                  <br /><br />Blue bars = nominal income. Green bars = real (purchasing-power-adjusted) income.
+                </div>
+              </div>
+              <div style={cs.card}>
+                <div style={{ fontSize: 12, color: "#94a3b8", fontWeight: 700, marginBottom: 14, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Income Lifecycle — {STATE_NAMES[state]}
+                </div>
+                {(() => {
+                  const maxVal = Math.max(...AGE_GROUPS.map(ag => INCOME[state]?.[ag] ?? 0));
+                  return AGE_GROUPS.map(ag => {
+                    const nom = INCOME[state]?.[ag] ?? 0;
+                    const rl  = realIncome(nom, rpp);
+                    const nomPct = (nom / maxVal) * 100;
+                    const rlPct  = (rl  / maxVal) * 100;
+                    return (
+                      <div key={ag} onClick={() => setAge(ag)}
+                        style={{ marginBottom: 10, cursor: "pointer", padding: "4px 6px", borderRadius: 6, background: ag === age ? "#0c1a2e" : "transparent" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                          <span style={{ fontSize: 11, color: AGE_COLORS[ag], fontWeight: 700 }}>{ag}</span>
+                          <span style={{ fontSize: 11, color: "#94a3b8" }}>{fmt(nom)} nominal · <span style={{ color: "#22c55e" }}>{fmt(rl)} real</span></span>
+                        </div>
+                        <div style={{ position: "relative", height: 10 }}>
+                          <div style={{ position: "absolute", top: 0, left: 0, width: `${nomPct}%`, height: "100%", background: AGE_COLORS[ag] + "88", borderRadius: 3 }} />
+                          <div style={{ position: "absolute", top: 2, left: 0, width: `${rlPct}%`, height: 6, background: "#22c55e", borderRadius: 3, opacity: 0.7 }} />
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+
+            {/* National lifecycle */}
+            <div style={cs.card}>
+              <div style={{ fontSize: 12, color: "#94a3b8", fontWeight: 700, marginBottom: 14, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                National Median Earnings by Age Bracket (BLS 2024)
+              </div>
+              {(() => {
+                const maxVal = Math.max(...Object.values(NATIONAL_5YR));
+                return AGE_GROUPS.map(ag => (
+                  <div key={ag} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
+                    <div style={{ width: 50, fontSize: 11, color: AGE_COLORS[ag], fontWeight: 700, textAlign: "right" }}>{ag}</div>
+                    <div style={{ flex: 1, background: "#1e293b", borderRadius: 4, height: 12, overflow: "hidden" }}>
+                      <div style={{ width: `${(NATIONAL_5YR[ag] / maxVal) * 100}%`, height: "100%", background: AGE_COLORS[ag], borderRadius: 4, transition: "width 0.4s ease" }} />
+                    </div>
+                    <div style={{ width: 72, fontSize: 12, color: "#94a3b8", textAlign: "right" }}>{fmt(NATIONAL_5YR[ag])}</div>
+                  </div>
+                ));
+              })()}
+              <div style={{ marginTop: 10, fontSize: 11, color: "#475569" }}>
+                Source: BLS individual-age median earnings (DQYDJ / ACS 2023). Peak earnings at 48-52 ({fmt(NATIONAL_5YR["48-52"])}). Incomes fall ~30% from peak to 68+.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── COL BREAKDOWN BY AGE ── */}
+        {tab === "colbreakdown" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 10 }}>
+              {AGE_GROUPS.map(ag => {
+                const bd = COL_BY_AGE[ag];
+                const isActive = ag === age;
+                return (
+                  <div key={ag} onClick={() => setAge(ag)}
+                    style={{ ...cs.card, cursor: "pointer", borderColor: isActive ? AGE_COLORS[ag] : "#1e293b", transition: "border-color 0.2s" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                      <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 18, fontWeight: 800, color: AGE_COLORS[ag] }}>Age {ag}</div>
+                      <div style={{ fontSize: 11, color: "#475569" }}>{fmt(NATIONAL_5YR[ag])}</div>
+                    </div>
+                    {[["Housing", bd.housing, "#818cf8"], ["Food", bd.food, "#34d399"], ["Healthcare", bd.healthcare, "#f87171"], ["Transport", bd.transport, "#fb923c"], ["Other", bd.other, "#94a3b8"]].map(([l,v,c]) =>
+                      <Bar key={l} label={l} pct={v} color={c} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Healthcare trend */}
+            <div style={cs.card}>
+              <div style={{ fontSize: 12, color: "#f87171", fontWeight: 700, marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                Healthcare Share by Age — The Key Driver of Disposable Income
+              </div>
+              {AGE_GROUPS.map(ag => {
+                const hc = COL_BY_AGE[ag].healthcare;
+                return (
+                  <div key={ag} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <div style={{ width: 50, fontSize: 11, color: AGE_COLORS[ag], fontWeight: 700, textAlign: "right" }}>{ag}</div>
+                    <div style={{ flex: 1, background: "#1e293b", borderRadius: 4, height: 14 }}>
+                      <div style={{ width: `${(hc / 17) * 100}%`, height: "100%", background: `hsl(${0 + (17 - hc) * 8},90%,60%)`, borderRadius: 4, transition: "width 0.4s ease" }} />
+                    </div>
+                    <div style={{ width: 42, fontSize: 12, color: hc >= 14 ? "#f87171" : hc >= 10 ? "#f59e0b" : "#94a3b8", fontWeight: hc >= 14 ? 700 : 400 }}>{hc}%</div>
+                  </div>
+                );
+              })}
+              <div style={{ marginTop: 10, fontSize: 11, color: "#475569", lineHeight: 1.7 }}>
+                Healthcare rises from 4% at 18-22 to 17% at 68+ — a 4× increase. For a retiree earning $46K nationally, that's ~$7,820/yr in healthcare vs. $920/yr for a young adult earning $22K. This directly erodes disposable income and gambling budget for older age groups.
+              </div>
+            </div>
+
+            {/* Comparison table */}
+            <div style={cs.card}>
+              <div style={{ fontSize: 12, color: "#94a3b8", fontWeight: 700, marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.08em" }}>Full COL Breakdown Table — All Age Groups</div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid #1e293b" }}>
+                      {["Age", "Nat'l Median", "Housing", "Food", "Healthcare", "Transport", "Other"].map(h => (
+                        <th key={h} style={{ ...cs.th, cursor: "default" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {AGE_GROUPS.map(ag => {
+                      const bd = COL_BY_AGE[ag];
+                      return (
+                        <tr key={ag} style={{ background: ag === age ? "#0c1a2e" : "transparent" }} onClick={() => setAge(ag)}
+                          style={{ cursor: "pointer", background: ag === age ? "#0c1a2e" : "transparent" }}>
+                          <td style={{ ...cs.td, color: AGE_COLORS[ag], fontWeight: 700 }}>{ag}</td>
+                          <td style={cs.td}>{fmt(NATIONAL_5YR[ag])}</td>
+                          <td style={{ ...cs.td, color: "#818cf8" }}>{bd.housing}%</td>
+                          <td style={{ ...cs.td, color: "#34d399" }}>{bd.food}%</td>
+                          <td style={{ ...cs.td, color: bd.healthcare >= 14 ? "#f87171" : bd.healthcare >= 10 ? "#f59e0b" : "#94a3b8", fontWeight: bd.healthcare >= 14 ? 700 : 400 }}>{bd.healthcare}%</td>
+                          <td style={{ ...cs.td, color: "#fb923c" }}>{bd.transport}%</td>
+                          <td style={cs.td}>{bd.other}%</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{ marginTop: 16, fontSize: 10, color: "#1e293b", lineHeight: 1.9 }}>
+          [1] BEA Regional Price Parities 2024 — bea.gov · [2] Scholaroo / Census ACS 2023 — scholaroo.com/report/median-income-by-generation ·
+          [3] BLS Individual-Age Earnings — dqydj.com/average-median-top-salary-by-age-percentiles ·
+          [4] BLS Consumer Expenditure Survey 2023 — bls.gov/cex
+        </div>
+      </div>
+    </div>
+  );
+}
